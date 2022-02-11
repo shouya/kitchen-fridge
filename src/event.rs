@@ -4,11 +4,12 @@ use chrono::{DateTime, Utc};
 use ical::property::Property;
 use serde::{Deserialize, Serialize};
 use url::Url;
+use uuid::Uuid;
 
 use crate::item::SyncStatus;
+use crate::utils::random_url;
 
-/// TODO: implement `Event` one day.
-/// This crate currently only supports tasks, not calendar events.
+/// This struct currently does not support all-day events
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
     /// The event URL
@@ -41,8 +42,33 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn new(name: String, completed: bool, parent_calendar_url: &Url) -> Self {
-        unimplemented!()
+    pub fn new(
+        name: String,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        parent_calendar_url: &Url,
+    ) -> Self {
+        let new_url = random_url(parent_calendar_url);
+        let new_sync_status = SyncStatus::NotSynced;
+        let new_uid = Uuid::new_v4().to_hyphenated().to_string();
+        let new_creation_date = Some(Utc::now());
+        let new_last_modified = Utc::now();
+        let new_description = None;
+        let ical_prod_id = crate::ical::default_prod_id();
+        let extra_parameters = Vec::new();
+        Self::new_with_parameters(
+            name,
+            new_uid,
+            new_url,
+            new_description,
+            new_sync_status,
+            start,
+            end,
+            new_creation_date,
+            new_last_modified,
+            ical_prod_id,
+            extra_parameters,
+        )
     }
 
     pub fn new_with_parameters(
