@@ -3,7 +3,9 @@
 use std::error::Error;
 
 use chrono::{DateTime, TimeZone, Utc};
+use chrono_tz::Tz;
 use ical::parser::ical::component::{IcalCalendar, IcalEvent, IcalTodo};
+use ical::property::Property;
 use url::Url;
 
 use crate::item::SyncStatus;
@@ -33,10 +35,12 @@ pub fn parse(
 
     let ical_prod_id = extract_ical_prod_id(&parsed_item)
         .map(|s| s.to_string())
-        .unwrap_or_else(|| super::default_prod_id());
+        .unwrap_or_else(super::default_prod_id);
 
     let item = match assert_single_type(&parsed_item)? {
-        CurrentType::Event(_) => Item::Event(Event::new()),
+        CurrentType::Event(event) => {
+            Item::Event(parse_event(event, item_url, sync_status, ical_prod_id)?)
+        }
         CurrentType::Todo(todo) => {
             Item::Task(parse_task(todo, item_url, sync_status, ical_prod_id)?)
         }
@@ -74,24 +78,24 @@ fn parse_task(
                 //  the calendar component was last revised in the calendar store."
                 // "In the case of an iCalendar object that doesn't specify a "METHOD"
                 //  property [e.g.: VTODO and VEVENT], this property is equivalent to the "LAST-MODIFIED" property".
-                last_modified = parse_date_time_from_property(&prop.value);
+                last_modified = parse_date_time_from_property(prop);
             }
             "LAST-MODIFIED" => {
                 // The property can be specified once, but is not mandatory
                 // "This property specifies the date and time that the information associated with
                 //  the calendar component was last revised in the calendar store."
                 // In practise, for VEVENT and VTODO, this is generally the same value as DTSTAMP.
-                last_modified = parse_date_time_from_property(&prop.value);
+                last_modified = parse_date_time_from_property(prop);
             }
             "COMPLETED" => {
                 // The property can be specified once, but is not mandatory
                 // "This property defines the date and time that a to-do was
                 //  actually completed."
-                completion_date = parse_date_time_from_property(&prop.value)
+                completion_date = parse_date_time_from_property(prop)
             }
             "CREATED" => {
                 // The property can be specified once, but is not mandatory
-                creation_date = parse_date_time_from_property(&prop.value)
+                creation_date = parse_date_time_from_property(prop)
             }
             "STATUS" => {
                 // Possible values:
@@ -160,7 +164,6 @@ fn parse_event(
     let mut description = None;
     let mut uid = None;
     let mut last_modified = None;
-    let mut completion_date = None;
     let mut creation_date = None;
     let mut start = None;
     let mut end = None;
@@ -177,30 +180,24 @@ fn parse_event(
                 //  the calendar component was last revised in the calendar store."
                 // "In the case of an iCalendar object that doesn't specify a "METHOD"
                 //  property [e.g.: VTODO and VEVENT], this property is equivalent to the "LAST-MODIFIED" property".
-                last_modified = parse_date_time_from_property(&prop.value);
+                last_modified = parse_date_time_from_property(prop);
             }
             "DTSTART" => {
-                start = parse_date_time_from_property(&prop.value);
+                start = parse_date_time_from_property(prop);
             }
             "DTEND" => {
-                end = parse_date_time_from_property(&prop.value);
+                end = parse_date_time_from_property(prop);
             }
             "LAST-MODIFIED" => {
                 // The property can be specified once, but is not mandatory
                 // "This property specifies the date and time that the information associated with
                 //  the calendar component was last revised in the calendar store."
                 // In practise, for VEVENT and VTODO, this is generally the same value as DTSTAMP.
-                last_modified = parse_date_time_from_property(&prop.value);
-            }
-            "COMPLETED" => {
-                // The property can be specified once, but is not mandatory
-                // "This property defines the date and time that a to-do was
-                //  actually completed."
-                completion_date = parse_date_time_from_property(&prop.value)
+                last_modified = parse_date_time_from_property(prop);
             }
             "CREATED" => {
                 // The property can be specified once, but is not mandatory
-                creation_date = parse_date_time_from_property(&prop.value)
+                creation_date = parse_date_time_from_property(prop)
             }
             _ => {
                 // This field is not supported. Let's store it anyway, so that we are able to re-create an identical iCal file
@@ -244,20 +241,27 @@ fn parse_event(
     ))
 }
 
-fn parse_date_time(dt: &str) -> Result<DateTime<Utc>, chrono::format::ParseError> {
-    Utc.datetime_from_str(dt, "%Y%m%dT%H%M%SZ")
-        .or_else(|_err| Utc.datetime_from_str(dt, "%Y%m%dT%H%M%S"))
-}
+fn parse_date_time_from_property(property: &Property) -> Option<DateTime<Utc>> {
+    use std::str::FromStr;
 
-fn parse_date_time_from_property(value: &Option<String>) -> Option<DateTime<Utc>> {
-    value.as_ref().and_then(|s| {
-        parse_date_time(s)
-            .map_err(|err| {
-                log::warn!("Invalid timestamp: {}", s);
-                err
-            })
-            .ok()
-    })
+    let tzid: Option<&String> = property.params.as_ref().and_then(|params| {
+        params
+            .iter()
+            .find_map(|(n, v)| (n == "TZID").then(|| ()).and_then(|_| v.iter().next()))
+    });
+
+    let s: &str = property.value.as_deref()?;
+    if let Ok(t) = Utc.datetime_from_str(s, "%Y%m%dT%H%M%SZ") {
+        return Some(t);
+    }
+
+    if let Some(tz) = tzid.and_then(|tz| Tz::from_str(tz).ok()) {
+        if let Ok(t) = tz.datetime_from_str(s, "%Y%m%dT%H%M%S") {
+            return Some(t.with_timezone(&Utc));
+        }
+    }
+
+    Utc.datetime_from_str(s, "%Y%m%dT%H%M%S").ok()
 }
 
 fn extract_ical_prod_id(item: &IcalCalendar) -> Option<&str> {
